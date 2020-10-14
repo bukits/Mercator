@@ -1,5 +1,5 @@
-//=============================================================================================
-// Mintaprogram: Zöld háromszög. Ervenyes 2019. osztol.
+ï»¿//=============================================================================================
+// Mintaprogram: ZÃ¶ld hÃ¡romszÃ¶g. Ervenyes 2019. osztol.
 //
 // A beadott program csak ebben a fajlban lehet, a fajl 1 byte-os ASCII karaktereket tartalmazhat, BOM kihuzando.
 // Tilos:
@@ -39,7 +39,7 @@ const char * const vertexSource = R"(
 	#version 330
 	precision highp float;
 
-	uniform int mercator = 1;
+	uniform int mercator = 0;
 	uniform mat4 MVP_Mercator;
 	uniform mat4 MVP_Globe;
 	layout(location = 0) in vec2 vp;
@@ -72,7 +72,7 @@ const float fi_1 = 85.0f;
 const float circleDiff = 20.0f;
 
 vec2 ConvertDegree2Radian(vec2 degree) {
-	return vec2(degree * (float)M_PI / 180.0f);
+	return degree * (float)M_PI / 180.0f;
 }
 
 class Mercator {
@@ -91,7 +91,7 @@ public:
 	}
 
 	vec2 CalculateMercatorCoord(vec2 radian) {
-		return { vec2(radian.y, logf((tanf(((float)M_PI / 4.0f) + (radian.x / 2.0f))))) };
+		return vec2(radian.y, logf((tanf(((float)M_PI / 4.0f) + (radian.x / 2.0f)))));
 	}
 
 	mat4 V() { return TranslateMatrix(-wCenter); }
@@ -105,16 +105,17 @@ class Globe {
 	vec2 wCenter;
 	vec2 wSize;
 public:
-	Globe() : wCenter(0.8,1.0), wSize(5, 5) {}
+	Globe() : wSize(2, 2), wCenter(0,0) {
+	}
 	vec3 CalculatePolarCoord(vec2 radian) {
-		float x = cos(radian.y) * cos(radian.x);
-		float y = sin(radian.y) * cos(radian.x);
-		float z = sin(radian.x);
+		float x = cosf(radian.y) * cosf(radian.x);
+		float y = sinf(radian.y) * cosf(radian.x);
+		float z = sinf(radian.x);
 		return vec3(x, y, z);
 	}
 
 	vec2 Proj2Plane(vec3 polar) {
-		return vec2(polar.x, polar.y);
+		return vec2(-polar.x, polar.z);
 	}
 
 	mat4 V() { return TranslateMatrix(-wCenter); }
@@ -125,7 +126,7 @@ GPUProgram gpuProgram;
 Mercator mercator;
 Globe globe;
 const int nTesselatedVertices = 100;
-bool modelMercator = true;
+bool modelMercator = false;
 
 class Geometry {
 protected:
@@ -177,9 +178,13 @@ public:
 		
 		vec2 startRadian = ConvertDegree2Radian(start);
 		vec2 endRadian = ConvertDegree2Radian(end);
-
-		this->startCp = mercator.CalculateMercatorCoord(startRadian);
-		this->endCp = mercator.CalculateMercatorCoord(endRadian);
+		if (modelMercator) {
+			this->startCp = mercator.CalculateMercatorCoord(startRadian);
+			this->endCp = mercator.CalculateMercatorCoord(endRadian);
+		} else {
+			this->startCp = globe.Proj2Plane(globe.CalculatePolarCoord(startRadian));
+			this->endCp = globe.Proj2Plane(globe.CalculatePolarCoord(endRadian));
+		}
 	}
 
 	void Create() {
@@ -216,18 +221,18 @@ class Continent : public Geometry {
 	vec4 s(int i, float t) {
 		vec4 a_i, b_i, c_i;
 		if (i == 0) {
-			a_i = (splineCps[i + 1] - splineCps[i]) * (1 / ((ts[i + 1] - ts[i]) * (ts[i + 1] - tEnd()))) -
-				(splineCps.back() - splineCps[i]) * (1 / ((tEnd() - ts[i]) * (ts[i + 1] - tEnd())));
-			b_i = (splineCps.back() - splineCps[i]) * (1 / (tEnd() - ts[i])) -
-				(splineCps[i + 1] - splineCps[i]) * (1 / ((ts[i + 1] - ts[i]) * (ts[i + 1] - tEnd()))) * (tEnd() - ts[i]) +
-				(splineCps.back() - splineCps[i]) * (1 / (ts[i + 1] - tEnd()));
+			a_i = (splineCps[i + 1] - splineCps[i]) * (1 / ((ts[i + 1] - ts[i]) * (ts[i + 1] - ts[splineCps.size() -1]))) -
+				(splineCps.back() - splineCps[i]) * (1 / ((ts[splineCps.size() - 1] - ts[i]) * (ts[i + 1] - ts[splineCps.size() - 1])));
+			b_i = (splineCps.back() - splineCps[i]) * (1 / (ts[splineCps.size() - 1] - ts[i])) -
+				(splineCps[i + 1] - splineCps[i]) * (1 / ((ts[i + 1] - ts[i]) * (ts[i + 1] - ts[splineCps.size() - 1]))) * (ts[splineCps.size() - 1] - ts[i]) +
+				(splineCps.back() - splineCps[i]) * (1 / (ts[i + 1] - ts[splineCps.size() - 1]));
 		}
 		else if (i == splineCps.size() - 1) {
-			a_i = (splineCps.front() - splineCps[i]) * (1 / ((tStart() - ts[i]) * (tStart() - ts[i - 1]))) -
-				(splineCps[i - 1] - splineCps[i]) * (1 / ((ts[i - 1] - ts[i]) * (tStart() - ts[i - 1])));
+			a_i = (splineCps.front() - splineCps[i]) * (1 / ((tEnd() - ts[i]) * (tEnd() - ts[i - 1]))) -
+				(splineCps[i - 1] - splineCps[i]) * (1 / ((ts[i - 1] - ts[i]) * (tEnd() - ts[i - 1])));
 			b_i = (splineCps[i - 1] - splineCps[i]) * (1 / (ts[i - 1] - ts[i])) -
-				(splineCps.front() - splineCps[i]) * (1 / ((tStart() - ts[i]) * (tStart() - ts[i - 1]))) * (ts[i - 1] - ts[i]) +
-				(splineCps[i - 1] - splineCps[i]) * (1 / (tStart() - ts[i - 1]));
+				(splineCps.front() - splineCps[i]) * (1 / ((tEnd() - ts[i]) * (tEnd() - ts[i - 1]))) * (ts[i - 1] - ts[i]) +
+				(splineCps[i - 1] - splineCps[i]) * (1 / (tEnd() - ts[i - 1]));
 		}
 		else {
 			a_i = (splineCps[i + 1] - splineCps[i]) * (1 / ((ts[i + 1] - ts[i]) * (ts[i + 1] - ts[i - 1]))) -
@@ -246,34 +251,38 @@ class Continent : public Geometry {
 	}
 
 	float tStart() { return ts[0]; }
-	float tEnd() { return ts[splineCps.size() - 1]; }
+	float tEnd() { return ts[splineCps.size()]; }
 public:
-	Continent(vector<vec2> inputCoords, vec3 color) {
-		for (auto coord : inputCoords) {
-			vec2 worldRadian = ConvertDegree2Radian(coord);
-			vec2 worldCoord;
-			if (modelMercator) {
-				worldCoord = mercator.CalculateMercatorCoord(worldRadian);
+	Continent(const vector<vec2>& inputCoords, vec3 color) {
+		if (modelMercator) {
+			for (auto coord : inputCoords) {
+				vec2 worldRadian = ConvertDegree2Radian(coord);
+				vec2 worldCoord = mercator.CalculateMercatorCoord(worldRadian);
+				AddControlPoint(worldCoord);
 			}
-			else {
+		} else {
+			for (auto coord : inputCoords) {
+				vec2 worldRadian = ConvertDegree2Radian(coord);
 				vec3 polar = globe.CalculatePolarCoord(worldRadian);
-				worldCoord = globe.Proj2Plane(polar);
+				vec2 worldCoord = globe.Proj2Plane(polar);
+				AddControlPoint(worldCoord);
 			}
-			AddControlPoint(worldCoord);
 		}
+		ts.push_back((float)splineCps.size());
 		this->color = color;
 	}
 
 	vec4 r(float t) {
 		vec4 ret(0, 0, 0, 0);
-		for (int index = 0; index < splineCps.size() - 1; ++index) {
+		for (int index = 0; index <= splineCps.size() - 1; ++index) {
 			if (ts[index] <= t && t <= ts[index + 1]) {
-				return ret = (s(index, t) * (ts[index + 1] - t) + s(index + 1, t) * (t - ts[index])) / (ts[index + 1] - ts[index]);
+				if (index == splineCps.size() - 1) {
+					return ret = s(index, t);
+				}
+				else {
+					return ret = (s(index, t) * (ts[index + 1] - t) + s(index + 1, t) * (t - ts[index])) / (ts[index + 1] - ts[index]);
+				}
 			}
-		}
-		if (t == tEnd()) {
-			int index = splineCps.size() - 1;
-			return ret = (s(index, t) * (tStart() - t) + s(0, t) * (t - ts[index])) / (tStart() - ts[index]);
 		}
 		return ret;
 	}
@@ -320,20 +329,22 @@ public:
 
 vector<Geometry*> entities;
 
-vector<vec2> eurasiaCoords{ vec2(36.0f, 0.0f), vec2(42.0f, 0.0f), vec2(47.0f, -3.0f), vec2(61.0f, 6.0f), vec2(70.0f, 28.0f),
-								vec2(65.0f, 44.0f), vec2(76.0f, 113.0f), vec2(60.0f, 160.0f), vec2(7.0f, 105.0f), vec2(19.0f, 90.0f),
-								vec2(4.0f, 80.0f), vec2(42.0f, 13.0f) };
-vec3 eurasiaColor(0.05f, 1.1f, 0.0f);
+vector<vec2> eurasiaCoords{ vec2(36.0f, 0.0f+20), vec2(42.0f, 0.0f+20), vec2(47.0f, -3.0f+20), vec2(61.0f, 6.0f+20), vec2(70.0f, 28.0f+20),
+								vec2(65.0f, 44.0f+20), vec2(76.0f, 113.0f+20), vec2(60.0f, 160.0f+20), vec2(7.0f, 105.0f+20), vec2(19.0f, 90.0f+20),
+								vec2(4.0f, 80.0f+20), vec2(42.0f, 13.0f+20) };
 
-vector<vec2> africaCoords{ vec2(33.0f, -5.0f), vec2(17.0f, -16.0f), vec2(3.0f, 6.0f),
-						   vec2(-35.0f, 19.0f), vec2(-3.0f, 40.0f), vec2(10.0f, 53.0f), vec2(30.0f, 33.0f) };
+vector<vec2> africaCoords{ vec2(33.0f, -5.0f +20), vec2(17.0f, -16.0+20), vec2(3.0f, 6.0f+20),
+						   vec2(-35.0f, 19.0f +20), vec2(-3.0f, 40.0f+20), vec2(10.0f, 53.0f+20), vec2(30.0f, 33.0f+20) };
+
+vector<vec2> earthCoords = { vec2(fi_0, mu_0), vec2(fi_0, mu_1), vec2(fi_1, mu_1), vec2(fi_1, mu_0) };
+	
 vec3 africaColor(1.8f, 0.8f, 0.0f);
+vec3 circlecolor(1.0f, 1.0f, 1.0f);
+vec3 eurasiaColor(0.05f, 1.1f, 0.0f);
+vec3 earthColor(0.05f, 0.0f, 0.9f);
 
 void CreateEntities() {
 	
-	/*vector<vec2> earthCoords = { vec2(fi_0, mu_0), vec2(fi_0, mu_1), vec2(fi_1, mu_1), vec2(fi_1, mu_0) };
-	vec3 earthColor(0.05f, 0.0f, 0.9f);*/
-
 	/*Geometry* earth = new Earth(earthCoords, earthColor);
 	entities.push_back(earth);*/
 
@@ -343,14 +354,13 @@ void CreateEntities() {
 	Geometry* africa = new Continent(africaCoords, africaColor);
 	entities.push_back(africa);
 
-	/*vec3 circleColor(1.0f, 1.0f, 1.0f);
 	for (float latitude = -90.0f + circleDiff; latitude < 90.0f; latitude += circleDiff) {
-		entities.push_back(new Circle(vec2(latitude, mu_0), vec2(latitude, mu_1), circleColor));
+		entities.push_back(new Circle(vec2(latitude, mu_0), vec2(latitude, mu_1), circlecolor));
 	}
 
 	for (float longitude = mu_0 + circleDiff; longitude < mu_1; longitude += circleDiff) {
-		entities.push_back(new Circle(vec2(fi_0, longitude), vec2(fi_1, longitude), circleColor));
-	}*/
+		entities.push_back(new Circle(vec2(fi_0, longitude), vec2(fi_1, longitude), circlecolor));
+	}
 
 	for (auto entity : entities) entity->Create();
 }
@@ -365,16 +375,12 @@ void onInitialization() {
 }
 
 void CreateMercatorWorld() {
-	entities.clear();
-	CreateEntities();
 	gpuProgram.setUniform(0, "mercator");
 	glutPostRedisplay();
 	modelMercator = false;
 }
 
 void CreateGlobeWorld() {
-	entities.clear();
-	CreateEntities();
 	gpuProgram.setUniform(1, "mercator");
 	glutPostRedisplay();
 	modelMercator = true;
