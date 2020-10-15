@@ -39,17 +39,11 @@ const char * const vertexSource = R"(
 	#version 330
 	precision highp float;
 
-	uniform int mercator = 0;
-	uniform mat4 MVP_Mercator;
-	uniform mat4 MVP_Globe;
+	uniform mat4 MVP;
 	layout(location = 0) in vec2 vp;
 
 	void main() {
-		if (mercator == 1) {
-			gl_Position = vec4(vp.x, vp.y, 0, 1) * MVP_Mercator;
-		} else if (mercator == 0) {
-			gl_Position = vec4(vp.x, vp.y, 0, 1) * MVP_Globe;
-		}
+		gl_Position = vec4(vp.x, vp.y, 0, 1) * MVP;
 	}
 )";
 
@@ -65,33 +59,49 @@ const char * const fragmentSource = R"(
 	}
 )";
 
-const float mu_0 = -20.0f;
-const float mu_1 = 160.0f;
+const float lambda_0 = -20.0f;
+const float lambda_1 = 160.0f;
 const float fi_0 = -85.0f;
 const float fi_1 = 85.0f;
 const float circleDiff = 20.0f;
+
+vector<vec2> ConvertDegree2RadianList(const vector<vec2>& inDegree) {
+	vector<vec2> inRad;
+	for (auto degree : inDegree) {
+		inRad.push_back(degree * (float)M_PI / 180.0f);
+	}
+	return inRad;
+}
 
 vec2 ConvertDegree2Radian(vec2 degree) {
 	return degree * (float)M_PI / 180.0f;
 }
 
+vec2 ConvertRadian2Degree(vec2 radian) {
+	return radian * 180.0f / (float)M_PI;
+}
+
 class Mercator {
 	vec2 wCenter;
 	vec2 wSize;
-	vec2 xStart = vec2(fi_0, mu_0), xEnd = vec2(fi_0, mu_1), yStart = vec2(fi_0, mu_0), yEnd = vec2(fi_1, mu_0);
+	vec2 xStart = vec2(fi_0, lambda_0), xEnd = vec2(fi_0, lambda_1), yStart = vec2(fi_0, lambda_0), yEnd = vec2(fi_1, lambda_0);
 public:
 	Mercator() {
-		vec2 xDir = CalculateMercatorCoord(ConvertDegree2Radian(xEnd)) - CalculateMercatorCoord(ConvertDegree2Radian(xStart));
-		vec2 yDir = CalculateMercatorCoord(ConvertDegree2Radian(yEnd)) - CalculateMercatorCoord(ConvertDegree2Radian(yStart));
-		vec2 origo = CalculateMercatorCoord(ConvertDegree2Radian(vec2((fi_0 + fi_1) / 2.0f, (mu_0 + mu_1) / 2.0f)));
+		vec2 xDir = CalculateMercator(ConvertDegree2Radian(xEnd)) - CalculateMercator(ConvertDegree2Radian(xStart));
+		vec2 yDir = CalculateMercator(ConvertDegree2Radian(yEnd)) - CalculateMercator(ConvertDegree2Radian(yStart));
+		vec2 origo = CalculateMercator(ConvertDegree2Radian(vec2((fi_0 + fi_1) / 2.0f, (lambda_0 + lambda_1) / 2.0f)));
 		float lengthX = length(xDir);
 		float lengthY = length(yDir);
 		wCenter = origo;
 		wSize = vec2(lengthX, lengthY);
 	}
 
-	vec2 CalculateMercatorCoord(vec2 radian) {
+	vec2 CalculateMercator(vec2 radian) {
 		return vec2(radian.y, logf((tanf(((float)M_PI / 4.0f) + (radian.x / 2.0f)))));
+	}
+
+	vec2 CalculateMercatorInverse(vec2 mercator) {
+		return vec2(2 * atanf(expf(mercator.y)) - (float)M_PI / 2.0f, mercator.x);
 	}
 
 	mat4 V() { return TranslateMatrix(-wCenter); }
@@ -107,31 +117,47 @@ class Globe {
 public:
 	Globe() : wSize(2, 2), wCenter(0,0) {
 	}
-	vec3 CalculatePolarCoord(vec2 radian) {
+	vec3 CalculatePolar(vec2 radian) {
 		float x = cosf(radian.y) * cosf(radian.x);
 		float y = sinf(radian.y) * cosf(radian.x);
 		float z = sinf(radian.x);
 		return vec3(x, y, z);
 	}
 
-	vec2 Proj2Plane(vec3 polar) {
+	vec2 CalculatePolarInverse(vec3 polar) {
+		float fi = asinf(polar.z);
+		float lambda = asinf(polar.y / cosf(fi));
+		return vec2(fi, lambda);
+	}
+
+	vec2 OrthogonalProj(vec3 polar) {
 		return vec2(-polar.x, polar.z);
+	}
+
+	vec3 OrthogonalProjInverse(vec2 ndc) {
+		float x = ndc.x;
+		float y = ndc.y;
+		float z = sqrtf(1.0f - powf(x, 2) - powf(y, 2));
+		return vec3(x, y, z);
 	}
 
 	mat4 V() { return TranslateMatrix(-wCenter); }
 	mat4 P() { return ScaleMatrix(vec2(2 / wSize.x, 2 / wSize.y)); }
+
+	mat4 Vinv() { return TranslateMatrix(wCenter); }
+	mat4 Pinv() { return ScaleMatrix(vec2(wSize.x / 2, wSize.y / 2)); }
 };
 
 GPUProgram gpuProgram;
 Mercator mercator;
 Globe globe;
 const int nTesselatedVertices = 100;
-bool modelMercator = false;
+bool modelMercator = true;
 
 class Geometry {
 protected:
 	unsigned int vao, vbo;
-	vec3 color;
+	vec3 mainColor;
 public:
 	virtual void Create() {
 		glGenVertexArrays(1, &vao);
@@ -141,11 +167,14 @@ public:
 		glBindBuffer(GL_ARRAY_BUFFER, vbo);
 	}
 	virtual void Draw() {
-		mat4 VPTransformMercator = mercator.V() * mercator.P();
-		gpuProgram.setUniform(VPTransformMercator, "MVP_Mercator");
-
-		mat4 VPTransformGlobe = globe.V() * globe.P();
-		gpuProgram.setUniform(VPTransformGlobe, "MVP_Globe");
+		mat4 VPTransform;
+		if (modelMercator) {
+			VPTransform = mercator.V() * mercator.P();
+		}
+		else {
+			VPTransform = globe.V() * globe.P();
+		}
+		gpuProgram.setUniform(VPTransform, "MVP");
 	}
 };
 
@@ -153,7 +182,11 @@ class Earth : public Geometry {
 	vector<vec2> cps;
 public:
 	Earth(vector<vec2> rectCoord, vec3 color) {
-		this->color = color;
+		this->mainColor = color;
+		for (auto degree : rectCoord) {
+			vec2 rad = ConvertDegree2Radian(degree);
+			cps.push_back(rad);
+		}
 	}
 
 	void Create() {
@@ -163,28 +196,116 @@ public:
 	}
 
 	void Draw() {
+		Geometry::Draw();
+
 		vector<float> vertexData;
+		vertexData.push_back(0.0f);
+		vertexData.push_back(0.0f);
+		//for (int j = 0; j < cps.size(); ++j) {
+			for (int i = 0; i < nTesselatedVertices; i++) {
+				float tNormalized = (float)i / (nTesselatedVertices - 1);
+				vec2 p = cps[1] + (cps[2] - cps[1]) * tNormalized;;
+				/*if (j == 3) p = cps[j] + (cps[0] - cps[j]) * tNormalized;
+				else p = cps[j] + (cps[j + 1] - cps[j]) * tNormalized;*/
+				vec2 cp = globe.OrthogonalProj(globe.CalculatePolar(p));
+				//vec2 cp = mercator.CalculateMercator(p);
+				vertexData.push_back(cp.x);
+				vertexData.push_back(cp.y);
+			}
+		//}
 		
-		
+		glBindVertexArray(vao);
+		glBindBuffer(GL_ARRAY_BUFFER, vbo);
+		glBufferData(GL_ARRAY_BUFFER, vertexData.size() * sizeof(float), &vertexData[0], GL_STATIC_DRAW);
+		gpuProgram.setUniform(this->mainColor, "color");
+		glDrawArrays(GL_TRIANGLE_FAN, 0,  nTesselatedVertices + 2);
 	}
 };
 
+class Curve : public Geometry {
+	unsigned int vaoCtrlPoints = 0, vboCtrlPoints = 0;
+protected:
+	vector<vec4> splineCps;
+	vec3 pointColor;
+public:
+	Curve(vec3 lineColor, vec3 pointColor) {
+		this->mainColor = lineColor;
+		this->pointColor = pointColor;
+	}
+
+	void Create() {
+		Geometry::Create();
+		glEnableVertexAttribArray(0);
+		glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), NULL);
+
+		glGenVertexArrays(1, &vaoCtrlPoints);
+		glBindVertexArray(vaoCtrlPoints);
+
+		glGenBuffers(1, &vboCtrlPoints);
+		glBindBuffer(GL_ARRAY_BUFFER, vboCtrlPoints);
+		glEnableVertexAttribArray(0);
+		glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), NULL);
+	}
+
+	virtual vec4 r(float t) { return splineCps[0]; }
+	virtual float tStart() { return 0; }
+	virtual float tEnd() { return 1; }
+	virtual void AddControlPoint(vec2 cp) = 0;
+
+	void Draw() {
+		Geometry::Draw();
+		if (splineCps.size() > 0) {
+			glBindVertexArray(vaoCtrlPoints);
+			glBindBuffer(GL_ARRAY_BUFFER, vboCtrlPoints);
+			glBufferData(GL_ARRAY_BUFFER, splineCps.size() * 4 * sizeof(float), &splineCps[0], GL_DYNAMIC_DRAW);
+			gpuProgram.setUniform(this->pointColor, "color");
+			glPointSize(10.0f);
+			glDrawArrays(GL_POINTS, 0, splineCps.size());
+		}
+
+		if (splineCps.size() >= 2) {
+			vector<float> vertexData;
+			for (int i = 0; i < nTesselatedVertices; i++) {
+				float tNormalized = (float)i / (nTesselatedVertices - 1);
+				float t = tStart() + (tEnd() - tStart()) * tNormalized;
+				vec4 wVertex = r(t);
+				vertexData.push_back(wVertex.x);
+				vertexData.push_back(wVertex.y);
+			}
+			glBindVertexArray(vao);
+			glBindBuffer(GL_ARRAY_BUFFER, vbo);
+			glBufferData(GL_ARRAY_BUFFER, vertexData.size() * sizeof(float), &vertexData[0], GL_DYNAMIC_DRAW);
+			gpuProgram.setUniform(this->mainColor, "color");
+			glLineWidth(2.0f);
+			glDrawArrays(GL_LINE_STRIP, 0, nTesselatedVertices);
+		}
+	}
+};
+
+class Path : public Curve {
+public:
+	Path(vec3 lineColor, vec3 pointColor) : Curve(lineColor, pointColor) {}
+
+	 void AddControlPoint(vec2 cp) {
+		vec4 wVertex = vec4(cp.x, cp.y, 0, 1) * globe.Pinv() * globe.Vinv();
+		splineCps.push_back(wVertex);
+	}
+
+	 vec4 r(float t) {
+		 return vec4(0, 0, 0, 0);
+	 }
+};
 
 class Circle : public Geometry {
 	vec2 startCp, endCp;
 public:
 	Circle(vec2 start, vec2 end, vec3 color) {
-		this->color = color;
+		this->mainColor = color;
 		
 		vec2 startRadian = ConvertDegree2Radian(start);
 		vec2 endRadian = ConvertDegree2Radian(end);
-		if (modelMercator) {
-			this->startCp = mercator.CalculateMercatorCoord(startRadian);
-			this->endCp = mercator.CalculateMercatorCoord(endRadian);
-		} else {
-			this->startCp = globe.Proj2Plane(globe.CalculatePolarCoord(startRadian));
-			this->endCp = globe.Proj2Plane(globe.CalculatePolarCoord(endRadian));
-		}
+		this->startCp = startRadian;
+		this->endCp = endRadian;
 	}
 
 	void Create() {
@@ -200,23 +321,22 @@ public:
 		for (int i = 0; i < nTesselatedVertices; i++) {
 			float tNormalized = (float)i / (nTesselatedVertices - 1);
 			vec2 p = startCp + (endCp - startCp) * tNormalized;
-			vertexData.push_back(p.x);
-			vertexData.push_back(p.y);
+			//vec2 cp = globe.OrthogonalProj(globe.CalculatePolar(p));
+			vec2 cp = mercator.CalculateMercator(p);
+			vertexData.push_back(cp.x);
+			vertexData.push_back(cp.y);
 		}
 		glBindVertexArray(vao);
 		glBindBuffer(GL_ARRAY_BUFFER, vbo);
 		glBufferData(GL_ARRAY_BUFFER, vertexData.size() * sizeof(float), &vertexData[0], GL_STATIC_DRAW);
-		gpuProgram.setUniform(this->color, "color");
+		gpuProgram.setUniform(this->mainColor, "color");
 		glLineWidth(1.0f);
 		glDrawArrays(GL_LINE_STRIP, 0, nTesselatedVertices);
 	}
 };
 
-class Continent : public Geometry {
-	vector<vec4> splineCps;
+class Continent : public Curve {
 	vector<float> ts;
-
-	unsigned int vaoCtrlPoints, vboCtrlPoints;
 
 	vec4 s(int i, float t) {
 		vec4 a_i, b_i, c_i;
@@ -253,23 +373,22 @@ class Continent : public Geometry {
 	float tStart() { return ts[0]; }
 	float tEnd() { return ts[splineCps.size()]; }
 public:
-	Continent(const vector<vec2>& inputCoords, vec3 color) {
+	Continent(const vector<vec2>& inputCoords, vec3 color) : Curve(color, color) {
 		if (modelMercator) {
 			for (auto coord : inputCoords) {
 				vec2 worldRadian = ConvertDegree2Radian(coord);
-				vec2 worldCoord = mercator.CalculateMercatorCoord(worldRadian);
+				vec2 worldCoord = mercator.CalculateMercator(worldRadian);
 				AddControlPoint(worldCoord);
 			}
 		} else {
 			for (auto coord : inputCoords) {
 				vec2 worldRadian = ConvertDegree2Radian(coord);
-				vec3 polar = globe.CalculatePolarCoord(worldRadian);
-				vec2 worldCoord = globe.Proj2Plane(polar);
+				vec3 polar = globe.CalculatePolar(worldRadian);
+				vec2 worldCoord = globe.OrthogonalProj(polar);
 				AddControlPoint(worldCoord);
 			}
 		}
 		ts.push_back((float)splineCps.size());
-		this->color = color;
 	}
 
 	vec4 r(float t) {
@@ -286,67 +405,34 @@ public:
 		}
 		return ret;
 	}
-
-	void Create() {
-		Geometry::Create();
-		glEnableVertexAttribArray(0);
-		glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), NULL);
-
-		glGenVertexArrays(1, &vaoCtrlPoints);
-		glBindVertexArray(vaoCtrlPoints);
-
-		glGenBuffers(1, &vboCtrlPoints);
-		glBindBuffer(GL_ARRAY_BUFFER, vboCtrlPoints);
-		glEnableVertexAttribArray(0);
-		glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), NULL);
-	}
-
-	void Draw() {
-		Geometry::Draw();
-		glBindVertexArray(vaoCtrlPoints);
-		glBindBuffer(GL_ARRAY_BUFFER, vboCtrlPoints);
-		glBufferData(GL_ARRAY_BUFFER, splineCps.size() * 4 * sizeof(float), &splineCps[0], GL_DYNAMIC_DRAW);
-		gpuProgram.setUniform(color, "color");
-		glPointSize(10.0f);
-		glDrawArrays(GL_POINTS, 0, splineCps.size());
-
-		vector<float> vertexData;
-		for (int i = 0; i < nTesselatedVertices; i++) {
-			float tNormalized = (float)i / (nTesselatedVertices - 1);
-			float t = tStart() + (tEnd() - tStart()) * tNormalized;
-			vec4 wVertex = r(t);
-			vertexData.push_back(wVertex.x);
-			vertexData.push_back(wVertex.y);
-		}
-		glBindVertexArray(vao);
-		glBindBuffer(GL_ARRAY_BUFFER, vbo);
-		glBufferData(GL_ARRAY_BUFFER, vertexData.size() * sizeof(float), &vertexData[0], GL_DYNAMIC_DRAW);
-		gpuProgram.setUniform(color, "color");
-		glLineWidth(2.0f);
-		glDrawArrays(GL_LINE_STRIP, 0, nTesselatedVertices);
-	}
 };
 
 vector<Geometry*> entities;
+Curve* path;
 
-vector<vec2> eurasiaCoords{ vec2(36.0f, 0.0f+20), vec2(42.0f, 0.0f+20), vec2(47.0f, -3.0f+20), vec2(61.0f, 6.0f+20), vec2(70.0f, 28.0f+20),
-								vec2(65.0f, 44.0f+20), vec2(76.0f, 113.0f+20), vec2(60.0f, 160.0f+20), vec2(7.0f, 105.0f+20), vec2(19.0f, 90.0f+20),
-								vec2(4.0f, 80.0f+20), vec2(42.0f, 13.0f+20) };
+vector<vec2> eurasiaCoords{ vec2(36.0f, 0.0f), vec2(42.0f, 0.0f), vec2(47.0f, -3.0f), vec2(61.0f, 6.0f), vec2(70.0f, 28.0f),
+								vec2(65.0f, 44.0f), vec2(76.0f, 113.0f), vec2(60.0f, 160.0f), vec2(7.0f, 105.0f), vec2(19.0f, 90.0f),
+								vec2(4.0f, 80.0f), vec2(42.0f, 13.0f) };
 
-vector<vec2> africaCoords{ vec2(33.0f, -5.0f +20), vec2(17.0f, -16.0+20), vec2(3.0f, 6.0f+20),
-						   vec2(-35.0f, 19.0f +20), vec2(-3.0f, 40.0f+20), vec2(10.0f, 53.0f+20), vec2(30.0f, 33.0f+20) };
+vector<vec2> africaCoords{ vec2(33.0f, -5.0f), vec2(17.0f, -16.0), vec2(3.0f, 6.0f),
+						   vec2(-35.0f, 19.0f), vec2(-3.0f, 40.0f), vec2(10.0f, 53.0f), vec2(30.0f, 33.0f) };
 
-vector<vec2> earthCoords = { vec2(fi_0, mu_0), vec2(fi_0, mu_1), vec2(fi_1, mu_1), vec2(fi_1, mu_0) };
+vector<vec2> earthCoords = { vec2(fi_0, lambda_0), vec2(fi_0, lambda_1), vec2(fi_1, lambda_1), vec2(fi_1, lambda_0) };
 	
 vec3 africaColor(1.8f, 0.8f, 0.0f);
 vec3 circlecolor(1.0f, 1.0f, 1.0f);
 vec3 eurasiaColor(0.05f, 1.1f, 0.0f);
 vec3 earthColor(0.05f, 0.0f, 0.9f);
+vec3 pathLineColor(1.0f, 1.0f, 0.0f);
+vec3 pathPointColor(1.0f, 0.0f, 0.0f);
 
 void CreateEntities() {
 	
-	/*Geometry* earth = new Earth(earthCoords, earthColor);
-	entities.push_back(earth);*/
+	Geometry* earth = new Earth(earthCoords, earthColor);
+	entities.push_back(earth);
+
+	path = new Path(pathLineColor, pathPointColor);
+	entities.push_back(path);
 
 	Geometry* eurasia = new Continent(eurasiaCoords, eurasiaColor);
 	entities.push_back(eurasia);
@@ -354,11 +440,11 @@ void CreateEntities() {
 	Geometry* africa = new Continent(africaCoords, africaColor);
 	entities.push_back(africa);
 
-	for (float latitude = -90.0f + circleDiff; latitude < 90.0f; latitude += circleDiff) {
-		entities.push_back(new Circle(vec2(latitude, mu_0), vec2(latitude, mu_1), circlecolor));
+	for (float latitude = -90.0f; latitude <= 90.0f; latitude += circleDiff) {
+		entities.push_back(new Circle(vec2(latitude, lambda_0), vec2(latitude, lambda_1 + 20), circlecolor));
 	}
 
-	for (float longitude = mu_0 + circleDiff; longitude < mu_1; longitude += circleDiff) {
+	for (float longitude = lambda_0; longitude <= lambda_1 + 20; longitude += circleDiff) {
 		entities.push_back(new Circle(vec2(fi_0, longitude), vec2(fi_1, longitude), circlecolor));
 	}
 
@@ -374,18 +460,6 @@ void onInitialization() {
 	gpuProgram.create(vertexSource, fragmentSource, "outColor");
 }
 
-void CreateMercatorWorld() {
-	gpuProgram.setUniform(0, "mercator");
-	glutPostRedisplay();
-	modelMercator = false;
-}
-
-void CreateGlobeWorld() {
-	gpuProgram.setUniform(1, "mercator");
-	glutPostRedisplay();
-	modelMercator = true;
-}
-
 void onDisplay() {
 	glClearColor(0, 0, 0, 0);
 	glClear(GL_COLOR_BUFFER_BIT);
@@ -395,8 +469,8 @@ void onDisplay() {
 
 void onKeyboard(unsigned char key, int pX, int pY) {
 	if (key == 'm') {
-		if (modelMercator) CreateGlobeWorld();
-		else CreateMercatorWorld();
+		modelMercator = !modelMercator;
+		glutPostRedisplay();
 	}
 }
 
@@ -404,6 +478,13 @@ void onKeyboardUp(unsigned char key, int pX, int pY) {}
 
 void onMouseMotion(int pX, int pY) {}
 
-void onMouse(int button, int state, int pX, int pY) {}
+void onMouse(int button, int state, int pX, int pY) {
+	if (button == GLUT_LEFT_BUTTON && state == GLUT_DOWN) {
+		float cX = 2.0f * pX / windowWidth - 1;
+		float cY = 1.0f - 2.0f * pY / windowHeight;
+		path->AddControlPoint(vec2(cX, cY));
+		glutPostRedisplay();
+	}
+}
 
 void onIdle() {}
