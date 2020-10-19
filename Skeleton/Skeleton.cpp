@@ -37,13 +37,46 @@ using namespace std;
 
 const char * const vertexSource = R"(
 	#version 330
+
+	#define PI 3.1415926538
+
 	precision highp float;
+
+	uniform int isMercator = 1;
 
 	uniform mat4 MVP;
 	layout(location = 0) in vec2 vp;
 
+	float degreeToRadian(float degree) {
+		return degree * PI / 180;
+	}
+
+	vec2 ConvertDegree2Radian(vec2 degree) {
+		return degree * PI / 180;
+	}
+
+	vec2 toMercator(vec2 coordDegree) {
+		vec2 coordRadian = ConvertDegree2Radian(coordDegree);
+		return vec2(coordRadian.y, log(tan((PI / 4) + (coordRadian.x / 2))));
+	}
+
+	vec2 toGlobe(vec2 coordDegree) {
+		vec2 coordRadian = ConvertDegree2Radian(coordDegree);
+		coordRadian.y += degreeToRadian(20);
+		float x = cos(coordRadian.y) * cos(coordRadian.x);
+		float y = sin(coordRadian.y) * cos(coordRadian.x);
+		float z = sin(coordRadian.x);
+		return vec2(-x, z);
+	}
+
 	void main() {
-		gl_Position = vec4(vp.x, vp.y, 0, 1) * MVP;
+		vec2 outCoord;
+		if (isMercator == 1) {
+			outCoord = toMercator(vp);
+		} else if (isMercator == 0) {
+			outCoord = toGlobe(vp);
+		}
+		gl_Position = vec4(outCoord.x, outCoord.y, 0, 1) * MVP;
 	}
 )";
 
@@ -65,13 +98,7 @@ const float fi_0 = -85.0f;
 const float fi_1 = 85.0f;
 const float circleDiff = 20.0f;
 
-vector<vec2> ConvertDegree2RadianList(const vector<vec2>& inDegree) {
-	vector<vec2> inRad;
-	for (auto degree : inDegree) {
-		inRad.push_back(degree * (float)M_PI / 180.0f);
-	}
-	return inRad;
-}
+const int earthRadius = 6371;
 
 vec2 ConvertDegree2Radian(vec2 degree) {
 	return degree * (float)M_PI / 180.0f;
@@ -81,11 +108,16 @@ vec2 ConvertRadian2Degree(vec2 radian) {
 	return radian * 180.0f / (float)M_PI;
 }
 
+float DegreeToRadian(float degree) {
+	return degree * (float)M_PI / 180.0f;
+}
+
 class Mercator {
-	vec2 wCenter;
 	vec2 wSize;
 	vec2 xStart = vec2(fi_0, lambda_0), xEnd = vec2(fi_0, lambda_1), yStart = vec2(fi_0, lambda_0), yEnd = vec2(fi_1, lambda_0);
 public:
+	vec2 wCenter;
+
 	Mercator() {
 		vec2 xDir = CalculateMercator(ConvertDegree2Radian(xEnd)) - CalculateMercator(ConvertDegree2Radian(xStart));
 		vec2 yDir = CalculateMercator(ConvertDegree2Radian(yEnd)) - CalculateMercator(ConvertDegree2Radian(yStart));
@@ -115,30 +147,27 @@ class Globe {
 	vec2 wCenter;
 	vec2 wSize;
 public:
-	Globe() : wSize(2, 2), wCenter(0,0) {
-	}
-	vec3 CalculatePolar(vec2 radian) {
-		float x = cosf(radian.y) * cosf(radian.x);
-		float y = sinf(radian.y) * cosf(radian.x);
-		float z = sinf(radian.x);
-		return vec3(x, y, z);
-	}
+	Globe() : wSize(2, 2), wCenter(0, 0) {}
 
 	vec2 CalculatePolarInverse(vec3 polar) {
 		float fi = asinf(polar.z);
-		float lambda = asinf(polar.y / cosf(fi));
+		float lambda = acosf(polar.x / cosf(fi));
+		lambda -= DegreeToRadian(20.0f);
 		return vec2(fi, lambda);
 	}
 
-	vec2 OrthogonalProj(vec3 polar) {
-		return vec2(-polar.x, polar.z);
+	vec3 CalculatePolar(vec2 coordDegree) {
+		float x = cos(coordDegree.y) * cos(coordDegree.x);
+		float y = sin(coordDegree.y) * cos(coordDegree.x);
+		float z = sin(coordDegree.x);
+		return vec3(x, y, z);
 	}
 
 	vec3 OrthogonalProjInverse(vec2 ndc) {
 		float x = ndc.x;
 		float y = ndc.y;
 		float z = sqrtf(1.0f - powf(x, 2) - powf(y, 2));
-		return vec3(x, y, z);
+		return vec3(-x, z, y);
 	}
 
 	mat4 V() { return TranslateMatrix(-wCenter); }
@@ -151,7 +180,7 @@ public:
 GPUProgram gpuProgram;
 Mercator mercator;
 Globe globe;
-const int nTesselatedVertices = 100;
+const int nTesselatedVertices = 200;
 bool modelMercator = true;
 
 class Geometry {
@@ -181,44 +210,40 @@ public:
 class Earth : public Geometry {	
 	vector<vec2> cps;
 public:
-	Earth(vector<vec2> rectCoord, vec3 color) {
+	Earth(const vector<vec2>& rectCoord, vec3 color) {
 		this->mainColor = color;
 		for (auto degree : rectCoord) {
-			vec2 rad = ConvertDegree2Radian(degree);
-			cps.push_back(rad);
+			cps.push_back(degree);
 		}
 	}
 
 	void Create() {
 		Geometry::Create();
 		glEnableVertexAttribArray(0);
-		glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2, NULL);
+		glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, NULL);
 	}
 
 	void Draw() {
 		Geometry::Draw();
-
 		vector<float> vertexData;
-		vertexData.push_back(0.0f);
-		vertexData.push_back(0.0f);
-		//for (int j = 0; j < cps.size(); ++j) {
+		vertexData.push_back((fi_0 + fi_1) / 2.0f);
+		vertexData.push_back((lambda_0 + lambda_1) / 2.0f);
+		for (int j = 0; j < cps.size(); ++j) {
 			for (int i = 0; i < nTesselatedVertices; i++) {
 				float tNormalized = (float)i / (nTesselatedVertices - 1);
-				vec2 p = cps[1] + (cps[2] - cps[1]) * tNormalized;;
-				/*if (j == 3) p = cps[j] + (cps[0] - cps[j]) * tNormalized;
-				else p = cps[j] + (cps[j + 1] - cps[j]) * tNormalized;*/
-				vec2 cp = globe.OrthogonalProj(globe.CalculatePolar(p));
-				//vec2 cp = mercator.CalculateMercator(p);
-				vertexData.push_back(cp.x);
-				vertexData.push_back(cp.y);
+				vec2 p;
+				if (j == 3) p = cps[j] + (cps[0] - cps[j]) * tNormalized;
+				else p = cps[j] + (cps[j + 1] - cps[j]) * tNormalized;
+				vertexData.push_back(p.x);
+				vertexData.push_back(p.y);
 			}
-		//}
+		}
 		
 		glBindVertexArray(vao);
 		glBindBuffer(GL_ARRAY_BUFFER, vbo);
 		glBufferData(GL_ARRAY_BUFFER, vertexData.size() * sizeof(float), &vertexData[0], GL_STATIC_DRAW);
 		gpuProgram.setUniform(this->mainColor, "color");
-		glDrawArrays(GL_TRIANGLE_FAN, 0,  nTesselatedVertices + 2);
+		glDrawArrays(GL_TRIANGLE_FAN, 0, ((nTesselatedVertices * 2 + 2) * cps.size()) / 2);
 	}
 };
 
@@ -283,16 +308,61 @@ public:
 };
 
 class Path : public Curve {
+	vector<float> ts;
+
+	//forrás: https://keisan.casio.com/exec/system/1224587128
+	float CalculateDistance(vec2 p_1, vec2 p_2) {
+		float delta = abs(p_2.x - p_1.x);
+		return earthRadius * acosf((sinf(p_1.y) * sinf(p_2.y)) + (cosf(p_1.y) * cosf(p_2.y) * cosf(delta)));
+	}
+
+	void ToConsole(vec2 latitudeLongitude) {
+		printf("Longitude: %f, Latitude: %f\n", latitudeLongitude.y, latitudeLongitude.x);
+		if (splineCps.size() > 0) {
+			vec4 lastCoord = splineCps.back();
+			float distance = CalculateDistance(latitudeLongitude, vec2(lastCoord.x, lastCoord.y));
+			printf("Distance: %f km\n", distance);
+		}
+	}
+
+	vec4 Slerp(float t, float t_0, vec4 pStart, vec4 pEnd) {
+		t = t - t_0;
+		float d = acosf(dot(normalize(vec2(pStart.x, pStart.y)), normalize(vec2(pEnd.x, pEnd.y))));
+		vec3 sphereStart = globe.CalculatePolar(ConvertDegree2Radian(vec2(pStart.x, pStart.y)));
+		vec3 sphereEnd = globe.CalculatePolar(ConvertDegree2Radian(vec2(pEnd.x, pEnd.y)));
+		vec4 r = (pStart * sinf((1 - t) * d) / sinf(d)) + (pEnd * sinf(t * d) / sinf(d));
+		return vec4(r.x, r.y, r.z);
+	}
 public:
 	Path(vec3 lineColor, vec3 pointColor) : Curve(lineColor, pointColor) {}
 
-	 void AddControlPoint(vec2 cp) {
-		vec4 wVertex = vec4(cp.x, cp.y, 0, 1) * globe.Pinv() * globe.Vinv();
-		splineCps.push_back(wVertex);
+	void AddControlPoint(vec2 cp) {
+		vec2 latitudeLongitude;
+		if (modelMercator) {
+			vec4 wVertex = vec4(cp.x, cp.y, 0, 1) * mercator.Pinv() * mercator.Vinv();
+			latitudeLongitude = mercator.CalculateMercatorInverse(vec2(wVertex.x, wVertex.y));
+		}
+		else {
+			vec4 wVertex = vec4(cp.x, cp.y, 0, 1) * globe.Pinv() * globe.Vinv();
+			latitudeLongitude = globe.CalculatePolarInverse(globe.OrthogonalProjInverse(vec2(wVertex.x, wVertex.y)));
+		}
+		vec2 degreeLatLong = ConvertRadian2Degree(latitudeLongitude);
+		ToConsole(degreeLatLong);
+		ts.push_back((float)splineCps.size());
+		splineCps.push_back(vec4(degreeLatLong.x, degreeLatLong.y));
 	}
 
+	 float tStart() { return ts[0]; }
+	 float tEnd() { return ts[splineCps.size() - 1]; }
+
 	 vec4 r(float t) {
-		 return vec4(0, 0, 0, 0);
+		 vec4 ret(0, 0, 0, 0);
+		 for (int i = 0; i < splineCps.size() - 1; i++) {
+			 if (ts[i] <= t && t <= ts[i + 1]) {
+				 return ret = Slerp(t, ts[i], splineCps[i], splineCps[i + 1]);
+			 }
+		 }
+		 return ret;
 	 }
 };
 
@@ -302,10 +372,8 @@ public:
 	Circle(vec2 start, vec2 end, vec3 color) {
 		this->mainColor = color;
 		
-		vec2 startRadian = ConvertDegree2Radian(start);
-		vec2 endRadian = ConvertDegree2Radian(end);
-		this->startCp = startRadian;
-		this->endCp = endRadian;
+		this->startCp = start;
+		this->endCp = end;
 	}
 
 	void Create() {
@@ -321,10 +389,8 @@ public:
 		for (int i = 0; i < nTesselatedVertices; i++) {
 			float tNormalized = (float)i / (nTesselatedVertices - 1);
 			vec2 p = startCp + (endCp - startCp) * tNormalized;
-			//vec2 cp = globe.OrthogonalProj(globe.CalculatePolar(p));
-			vec2 cp = mercator.CalculateMercator(p);
-			vertexData.push_back(cp.x);
-			vertexData.push_back(cp.y);
+			vertexData.push_back(p.x);
+			vertexData.push_back(p.y);
 		}
 		glBindVertexArray(vao);
 		glBindBuffer(GL_ARRAY_BUFFER, vbo);
@@ -341,18 +407,18 @@ class Continent : public Curve {
 	vec4 s(int i, float t) {
 		vec4 a_i, b_i, c_i;
 		if (i == 0) {
-			a_i = (splineCps[i + 1] - splineCps[i]) * (1 / ((ts[i + 1] - ts[i]) * (ts[i + 1] - ts[splineCps.size() -1]))) -
+			a_i = (splineCps[i + 1] - splineCps[i]) * (1 / ((ts[i + 1] - ts[i]) * (ts[i + 1] - ts[splineCps.size() - 1]))) -
 				(splineCps.back() - splineCps[i]) * (1 / ((ts[splineCps.size() - 1] - ts[i]) * (ts[i + 1] - ts[splineCps.size() - 1])));
 			b_i = (splineCps.back() - splineCps[i]) * (1 / (ts[splineCps.size() - 1] - ts[i])) -
 				(splineCps[i + 1] - splineCps[i]) * (1 / ((ts[i + 1] - ts[i]) * (ts[i + 1] - ts[splineCps.size() - 1]))) * (ts[splineCps.size() - 1] - ts[i]) +
 				(splineCps.back() - splineCps[i]) * (1 / (ts[i + 1] - ts[splineCps.size() - 1]));
 		}
 		else if (i == splineCps.size() - 1) {
-			a_i = (splineCps.front() - splineCps[i]) * (1 / ((tEnd() - ts[i]) * (tEnd() - ts[i - 1]))) -
-				(splineCps[i - 1] - splineCps[i]) * (1 / ((ts[i - 1] - ts[i]) * (tEnd() - ts[i - 1])));
+			a_i = (splineCps[1] - splineCps[i]) * (1 / ((ts[1] - ts[i]) * (ts[1] - ts[i - 1]))) -
+				(splineCps[i - 1] - splineCps[i]) * (1 / ((ts[i - 1] - ts[i]) * (ts[1] - ts[i - 1])));
 			b_i = (splineCps[i - 1] - splineCps[i]) * (1 / (ts[i - 1] - ts[i])) -
-				(splineCps.front() - splineCps[i]) * (1 / ((tEnd() - ts[i]) * (tEnd() - ts[i - 1]))) * (ts[i - 1] - ts[i]) +
-				(splineCps[i - 1] - splineCps[i]) * (1 / (tEnd() - ts[i - 1]));
+				(splineCps[1] - splineCps[i]) * (1 / ((ts[1] - ts[i]) * (ts[1] - ts[i - 1]))) * (ts[i - 1] - ts[i]) +
+				(splineCps[i - 1] - splineCps[i]) * (1 / (ts[1] - ts[i - 1]));
 		}
 		else {
 			a_i = (splineCps[i + 1] - splineCps[i]) * (1 / ((ts[i + 1] - ts[i]) * (ts[i + 1] - ts[i - 1]))) -
@@ -371,36 +437,20 @@ class Continent : public Curve {
 	}
 
 	float tStart() { return ts[0]; }
-	float tEnd() { return ts[splineCps.size()]; }
+	float tEnd() { return ts[splineCps.size() - 1]; }
 public:
 	Continent(const vector<vec2>& inputCoords, vec3 color) : Curve(color, color) {
-		if (modelMercator) {
-			for (auto coord : inputCoords) {
-				vec2 worldRadian = ConvertDegree2Radian(coord);
-				vec2 worldCoord = mercator.CalculateMercator(worldRadian);
-				AddControlPoint(worldCoord);
-			}
-		} else {
-			for (auto coord : inputCoords) {
-				vec2 worldRadian = ConvertDegree2Radian(coord);
-				vec3 polar = globe.CalculatePolar(worldRadian);
-				vec2 worldCoord = globe.OrthogonalProj(polar);
-				AddControlPoint(worldCoord);
-			}
+		for (auto coord : inputCoords) {
+			AddControlPoint(coord);
 		}
-		ts.push_back((float)splineCps.size());
+		AddControlPoint(inputCoords[0]);
 	}
 
 	vec4 r(float t) {
 		vec4 ret(0, 0, 0, 0);
-		for (int index = 0; index <= splineCps.size() - 1; ++index) {
+		for (int index = 0; index < splineCps.size() - 1; ++index) {
 			if (ts[index] <= t && t <= ts[index + 1]) {
-				if (index == splineCps.size() - 1) {
-					return ret = s(index, t);
-				}
-				else {
-					return ret = (s(index, t) * (ts[index + 1] - t) + s(index + 1, t) * (t - ts[index])) / (ts[index + 1] - ts[index]);
-				}
+				return ret = (s(index, t) * (ts[index + 1] - t) + s(index + 1, t) * (t - ts[index])) / (ts[index + 1] - ts[index]);
 			}
 		}
 		return ret;
@@ -417,7 +467,7 @@ vector<vec2> eurasiaCoords{ vec2(36.0f, 0.0f), vec2(42.0f, 0.0f), vec2(47.0f, -3
 vector<vec2> africaCoords{ vec2(33.0f, -5.0f), vec2(17.0f, -16.0), vec2(3.0f, 6.0f),
 						   vec2(-35.0f, 19.0f), vec2(-3.0f, 40.0f), vec2(10.0f, 53.0f), vec2(30.0f, 33.0f) };
 
-vector<vec2> earthCoords = { vec2(fi_0, lambda_0), vec2(fi_0, lambda_1), vec2(fi_1, lambda_1), vec2(fi_1, lambda_0) };
+vector<vec2> earthCoords{ vec2(fi_0, lambda_0), vec2(fi_0, lambda_1), vec2(fi_1, lambda_1), vec2(fi_1, lambda_0) };
 	
 vec3 africaColor(1.8f, 0.8f, 0.0f);
 vec3 circlecolor(1.0f, 1.0f, 1.0f);
@@ -470,6 +520,7 @@ void onDisplay() {
 void onKeyboard(unsigned char key, int pX, int pY) {
 	if (key == 'm') {
 		modelMercator = !modelMercator;
+		gpuProgram.setUniform(modelMercator, "isMercator");
 		glutPostRedisplay();
 	}
 }
