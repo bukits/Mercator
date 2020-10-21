@@ -112,6 +112,10 @@ float DegreeToRadian(float degree) {
 	return degree * (float)M_PI / 180.0f;
 }
 
+float RadianToDegree(float radian) {
+	return radian * 180.0f / (float)M_PI;
+}
+
 class Mercator {
 	vec2 wSize;
 	vec2 xStart = vec2(fi_0, lambda_0), xEnd = vec2(fi_0, lambda_1), yStart = vec2(fi_0, lambda_0), yEnd = vec2(fi_1, lambda_0);
@@ -313,10 +317,14 @@ class Path : public Curve {
 	vector<float> ts;
 
 	float CalculateDistance(vec2 p_1, vec2 p_2) {
+		float alpha = CalculateAlpha(p_1, p_2);
+		return earthRadius * alpha;
+	}
+
+	float CalculateAlpha(vec2 p_1, vec2 p_2) {
 		vec3 sphereStart = globe.CalculatePolar(vec2(p_1.x, p_1.y));
 		vec3 sphereEnd = globe.CalculatePolar(vec2(p_2.x, p_2.y));
-		float alpha = acosf(dot(normalize(sphereStart), normalize(sphereEnd)));
-		return earthRadius * alpha;
+		return acosf(dot(normalize(sphereStart), normalize(sphereEnd)));
 	}
 
 	void ToConsole(vec2 latitudeLongitude) {
@@ -332,15 +340,14 @@ class Path : public Curve {
 		t = t - t_0;
 		vec2 startRad = ConvertDegree2Radian(vec2(pStart.x, pStart.y));
 		vec2 endRad = ConvertDegree2Radian(vec2(pEnd.x, pEnd.y));
-		float d = acosf((sinf(startRad.x) * sinf(endRad.x)) + (cosf(startRad.x) * cosf(endRad.x) * cosf(startRad.y - endRad.y)));
-		printf("d: %f\n", d);
-		float A = sinf((1 - t) * d) / sinf(d);
-		float B = sinf(t * d) / sinf(d);
+		float alpha = CalculateAlpha(vec2(pStart.x, pStart.y), vec2(pEnd.x, pEnd.y));
+		float A = sinf((1 - t) * alpha) / sinf(alpha);
+		float B = sinf(t * alpha) / sinf(alpha);
 
 		float x = A * cosf(startRad.y) * cosf(startRad.x) + B * cosf(endRad.y) * cosf(endRad.x);
 		float y = A * sinf(startRad.y) * cosf(startRad.x) + B * sinf(endRad.y) * cosf(endRad.x);
 		float z = A * sinf(startRad.x) + B * sinf(endRad.x);
-		return vec4(atan2(x, sqrtf((x * x) + (z * z))), atan2(z, x));
+		return vec4(RadianToDegree(atan2(z, sqrt(pow(x, 2) + pow(y, 2)))), RadianToDegree(atan2(y, x)));
 	}
 public:
 	Path(vec3 lineColor, vec3 pointColor) : Curve(lineColor, pointColor) {}
