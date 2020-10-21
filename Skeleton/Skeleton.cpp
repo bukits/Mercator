@@ -149,18 +149,19 @@ class Globe {
 public:
 	Globe() : wSize(2, 2), wCenter(0, 0) {}
 
+	vec3 CalculatePolar(vec2 coordDegree) {
+		vec2 coordRadian = ConvertDegree2Radian(coordDegree);
+		float x = cosf(coordRadian.y) * cosf(coordRadian.x);
+		float y = sinf(coordRadian.y) * cosf(coordRadian.x);
+		float z = sinf(coordRadian.x);
+		return vec3(x, y, z);
+	}
+
 	vec2 CalculatePolarInverse(vec3 polar) {
 		float fi = asinf(polar.z);
 		float lambda = acosf(polar.x / cosf(fi));
 		lambda -= DegreeToRadian(20.0f);
 		return vec2(fi, lambda);
-	}
-
-	vec3 CalculatePolar(vec2 coordDegree) {
-		float x = cos(coordDegree.y) * cos(coordDegree.x);
-		float y = sin(coordDegree.y) * cos(coordDegree.x);
-		float z = sin(coordDegree.x);
-		return vec3(x, y, z);
 	}
 
 	vec3 OrthogonalProjInverse(vec2 ndc) {
@@ -243,10 +244,11 @@ public:
 		glBindBuffer(GL_ARRAY_BUFFER, vbo);
 		glBufferData(GL_ARRAY_BUFFER, vertexData.size() * sizeof(float), &vertexData[0], GL_STATIC_DRAW);
 		gpuProgram.setUniform(this->mainColor, "color");
-		glDrawArrays(GL_TRIANGLE_FAN, 0, ((nTesselatedVertices * 2 + 2) * cps.size()) / 2);
+		glDrawArrays(GL_TRIANGLE_FAN, 0, ((nTesselatedVertices * 2) * cps.size() + 2) / 2);
 	}
 };
 
+//forrás: Szirmay tanár úr forráskodja alapján
 class Curve : public Geometry {
 	unsigned int vaoCtrlPoints = 0, vboCtrlPoints = 0;
 protected:
@@ -310,10 +312,11 @@ public:
 class Path : public Curve {
 	vector<float> ts;
 
-	//forrás: https://keisan.casio.com/exec/system/1224587128
 	float CalculateDistance(vec2 p_1, vec2 p_2) {
-		float delta = abs(p_2.x - p_1.x);
-		return earthRadius * acosf((sinf(p_1.y) * sinf(p_2.y)) + (cosf(p_1.y) * cosf(p_2.y) * cosf(delta)));
+		vec3 sphereStart = globe.CalculatePolar(vec2(p_1.x, p_1.y));
+		vec3 sphereEnd = globe.CalculatePolar(vec2(p_2.x, p_2.y));
+		float alpha = acosf(dot(normalize(sphereStart), normalize(sphereEnd)));
+		return earthRadius * alpha;
 	}
 
 	void ToConsole(vec2 latitudeLongitude) {
@@ -327,11 +330,17 @@ class Path : public Curve {
 
 	vec4 Slerp(float t, float t_0, vec4 pStart, vec4 pEnd) {
 		t = t - t_0;
-		float d = acosf(dot(normalize(vec2(pStart.x, pStart.y)), normalize(vec2(pEnd.x, pEnd.y))));
-		vec3 sphereStart = globe.CalculatePolar(ConvertDegree2Radian(vec2(pStart.x, pStart.y)));
-		vec3 sphereEnd = globe.CalculatePolar(ConvertDegree2Radian(vec2(pEnd.x, pEnd.y)));
-		vec4 r = (pStart * sinf((1 - t) * d) / sinf(d)) + (pEnd * sinf(t * d) / sinf(d));
-		return vec4(r.x, r.y, r.z);
+		vec2 startRad = ConvertDegree2Radian(vec2(pStart.x, pStart.y));
+		vec2 endRad = ConvertDegree2Radian(vec2(pEnd.x, pEnd.y));
+		float d = acosf((sinf(startRad.x) * sinf(endRad.x)) + (cosf(startRad.x) * cosf(endRad.x) * cosf(startRad.y - endRad.y)));
+		printf("d: %f\n", d);
+		float A = sinf((1 - t) * d) / sinf(d);
+		float B = sinf(t * d) / sinf(d);
+
+		float x = A * cosf(startRad.y) * cosf(startRad.x) + B * cosf(endRad.y) * cosf(endRad.x);
+		float y = A * sinf(startRad.y) * cosf(startRad.x) + B * sinf(endRad.y) * cosf(endRad.x);
+		float z = A * sinf(startRad.x) + B * sinf(endRad.x);
+		return vec4(atan2(x, sqrtf((x * x) + (z * z))), atan2(z, x));
 	}
 public:
 	Path(vec3 lineColor, vec3 pointColor) : Curve(lineColor, pointColor) {}
